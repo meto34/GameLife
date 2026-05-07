@@ -21,6 +21,85 @@ type Cell struct {
 	rect     *canvas.Rectangle
 	editable bool
 }
+type Game struct {
+	win fyne.Window
+
+	startBtn *widget.Button
+
+	currentField [][]bool
+	nextField    [][]bool
+
+	history [][][]bool
+
+	started bool
+}
+
+func (g *Game) render() {
+
+	currentGrid := buildGrid(g.currentField, false)
+	nextGrid := buildGrid(g.nextField, false)
+
+	g.win.SetContent(container.NewVBox(
+		g.startBtn,
+
+		widget.NewLabel("Текущее поколение"),
+		currentGrid,
+
+		widget.NewLabel("Следующее поколение"),
+		nextGrid,
+	))
+}
+func (g *Game) checkGameOver() bool {
+	return g.handleGameOver()
+}
+func (g *Game) firstStep() {
+
+	g.nextField = nextGeneration(g.currentField)
+
+	if g.checkGameOver() {
+		return
+	}
+
+	g.history = append(
+		g.history,
+		copyField(g.nextField),
+	)
+
+	g.started = true
+
+	g.startBtn.SetText("Следующий шаг")
+
+	g.render()
+}
+func (g *Game) nextStep() {
+
+	g.currentField = g.nextField
+
+	g.nextField = nextGeneration(g.currentField)
+
+	if g.checkGameOver() {
+		return
+	}
+
+	g.history = append(
+		g.history,
+		copyField(g.nextField),
+	)
+
+	g.render()
+}
+func (g *Game) createGameHandler() func() {
+
+	return func() {
+
+		if !g.started {
+			g.firstStep()
+			return
+		}
+
+		g.nextStep()
+	}
+}
 
 func hasAliveCells(field [][]bool) bool {
 
@@ -125,7 +204,12 @@ func countNeighbors(field [][]bool, row, col int) int {
 
 	return count
 }
-
+func survive(alive bool, neighbors int) bool {
+	if alive {
+		return neighbors == 2 || neighbors == 3
+	}
+	return neighbors == 3
+}
 func nextGeneration(field [][]bool) [][]bool {
 
 	rows := len(field)
@@ -141,18 +225,7 @@ func nextGeneration(field [][]bool) [][]bool {
 		for j := 0; j < cols; j++ {
 
 			neighbors := countNeighbors(field, i, j)
-
-			// если клетка живая
-			if field[i][j] {
-
-				// живет при 2 или 3 соседях
-				next[i][j] = neighbors == 2 || neighbors == 3
-
-			} else {
-
-				// мертвая оживает при 3 соседях
-				next[i][j] = neighbors == 3
-			}
+			next[i][j] = survive(field[i][j], neighbors)
 		}
 	}
 
@@ -194,7 +267,7 @@ func copyField(field [][]bool) [][]bool {
 
 	return copyArr
 }
-func checkGameOver(
+func isGameOver(
 	currentField [][]bool,
 	nextField [][]bool,
 	history [][][]bool,
@@ -220,16 +293,67 @@ func checkGameOver(
 
 	return false, ""
 }
+func (g *Game) handleGameOver() bool {
 
+	gameOver, reason := isGameOver(
+		g.currentField,
+		g.nextField,
+		g.history,
+	)
+
+	if !gameOver {
+		return false
+	}
+
+	dialog.ShowInformation(
+		"Игра окончена",
+		"Игра окончена из-за того, что "+reason,
+		g.win,
+	)
+
+	g.startBtn.Disable()
+
+	return true
+}
+
+func (g *Game) step() bool {
+
+	if !g.started {
+		g.nextField = nextGeneration(g.currentField)
+		g.started = true
+		g.startBtn.SetText("Следующий шаг")
+		return true
+	}
+
+	g.currentField = g.nextField
+	g.nextField = nextGeneration(g.currentField)
+
+	return true
+}
+func (g *Game) handler() func() {
+
+	return func() {
+
+		g.step()
+
+		if g.checkGameOver() {
+			return
+		}
+
+		g.history = append(
+			g.history,
+			copyField(g.nextField),
+		)
+
+		g.render()
+	}
+}
 func createField(
 	win fyne.Window,
 	inputVert *widget.Entry,
 	inputHor *widget.Entry,
 ) func() {
-
 	return func() {
-
-		// Читаем вертикальный размер
 		sizeVert, err := strconv.Atoi(inputVert.Text)
 		if err != nil {
 			dialog.ShowError(
@@ -246,8 +370,6 @@ func createField(
 			)
 			return
 		}
-
-		// Читаем горизонтальный размер
 		sizeHor, err := strconv.Atoi(inputHor.Text)
 		if err != nil {
 			dialog.ShowError(
@@ -266,110 +388,25 @@ func createField(
 		}
 
 		field := make([][]bool, sizeVert)
-
+		game := &Game{
+			win: win,
+		}
 		for i := range field {
 			field[i] = make([]bool, sizeHor)
 
 			for j := range field[i] {
-				field[i][j] = true // все клетки живые
+				field[i][j] = true // все клетки живые по умолчанию
 			}
 		}
-		currentField := field
-		history := make([][][]bool, 0)
-		history = append(history, copyField(currentField))
-		var nextField [][]bool
+		game.currentField = field
+		game.history = append(game.history, copyField(field))
 
-		currentGrid := buildGrid(currentField, true)
+		currentGrid := buildGrid(game.currentField, true)
 
-		var nextGrid *fyne.Container
+		game.startBtn = widget.NewButton("Начать игру", game.handler())
 
-		started := false
-
-		var startBtn *widget.Button
-
-		startBtn = widget.NewButton("Начать игру", func() {
-
-			// Здесь поведение при первом запуске
-			if !started {
-				currentGrid = buildGrid(currentField, false)
-				nextField = nextGeneration(currentField)
-
-				gameOver, reason := checkGameOver(
-					currentField,
-					nextField,
-					history,
-				)
-
-				if gameOver {
-
-					dialog.ShowInformation(
-						"Игра окончена",
-						"Игра окончена из-за того, что "+reason,
-						win,
-					)
-
-					startBtn.Disable()
-				}
-
-				history = append(history, copyField(nextField))
-
-				nextGrid = buildGrid(nextField, false)
-
-				started = true
-
-				startBtn.SetText("Следующий шаг")
-
-				win.SetContent(container.NewVBox(
-					startBtn,
-
-					widget.NewLabel("Текущее поколение"),
-					currentGrid,
-
-					widget.NewLabel("Следующее поколение"),
-					nextGrid,
-				))
-
-				return
-			}
-
-			currentField = nextField
-
-			nextField = nextGeneration(currentField)
-
-			gameOver, reason := checkGameOver(
-				currentField,
-				nextField,
-				history,
-			)
-
-			if gameOver {
-
-				dialog.ShowInformation(
-					"Игра окончена",
-					"Игра окончена из-за того, что "+reason,
-					win,
-				)
-
-				startBtn.Disable()
-			}
-
-			history = append(history, copyField(nextField))
-
-			currentGrid = buildGrid(currentField, false)
-			nextGrid = buildGrid(nextField, false)
-
-			win.SetContent(container.NewVBox(
-				startBtn,
-
-				widget.NewLabel("Текущее поколение"),
-				currentGrid,
-
-				widget.NewLabel("Следующее поколение"),
-				nextGrid,
-			))
-		})
 		win.SetContent(container.NewVBox(
-			startBtn,
+			game.startBtn,
 
 			widget.NewLabel("Стартовое поколение"),
 			currentGrid,
@@ -377,31 +414,35 @@ func createField(
 	}
 
 }
-
-func main() {
-	myApp := app.New()
-	myWindow := myApp.NewWindow("Жизнь")
+func makeStartScreen(win fyne.Window) fyne.CanvasObject {
 
 	labelInputVert := widget.NewLabel("Введите размер поля по вертикали:")
 	inputVert := widget.NewEntry()
+	inputVert.SetPlaceHolder("5")
 
 	labelInputHor := widget.NewLabel("Введите размер поля по горизонтали:")
 	inputHor := widget.NewEntry()
+	inputHor.SetPlaceHolder("4")
 
 	okbtn := widget.NewButton(
 		"Подтвердить",
-		createField(myWindow, inputVert, inputHor),
+		createField(win, inputVert, inputHor),
 	)
 
-	content := container.NewVBox(
+	return container.NewVBox(
 		labelInputVert,
 		inputVert,
 		labelInputHor,
 		inputHor,
 		okbtn,
 	)
+}
 
-	myWindow.SetContent(content)
+func main() {
+	myApp := app.New()
+	myWindow := myApp.NewWindow("Жизнь")
+
+	myWindow.SetContent(makeStartScreen(myWindow))
 	myWindow.Resize(fyne.NewSize(800, 800))
 	myWindow.ShowAndRun()
 }
